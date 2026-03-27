@@ -1,18 +1,18 @@
-# Agent Setup Guide — hollow
+# Agent Setup Guide
 
-How to stand up a new agent on hollow with full communication infrastructure.
+How to stand up a new Claude Code agent with full communication infrastructure: Discord, self-timers (nudge), conversation coordination (choord), and autonomous restart.
 
 ## Prerequisites
-- A linux user account on hollow (delta creates these)
-- A Discord bot application with token (AJ creates in Discord Developer Portal)
-- The bot invited to the hollow Discord server with message permissions
-- Claude Code installed and authenticated
+- A Linux server with user accounts for each agent
+- A Discord bot application per agent (created in the [Discord Developer Portal](https://discord.com/developers/applications))
+- Each bot invited to a shared Discord server with message permissions
+- [Claude Code](https://claude.ai/code) installed and authenticated
+- [Bun](https://bun.sh) installed
 
-## Step 1: Basic Claude Code setup
+## Step 1: Claude Code settings
 
-In the agent's home directory:
+### Permission bypass (for unattended operation)
 
-### Settings
 Create `~/.claude/settings.json`:
 ```json
 {
@@ -32,71 +32,89 @@ Create `~/.claude/settings.local.json`:
 }
 ```
 
-### Discord plugin
-1. Start claude once to install the discord plugin: `/plugin install discord@claude-plugins-official`
+### Workspace trust (skip the trust dialog on restart)
+
+After the first session, set `hasTrustDialogAccepted: true` in `~/.claude.json` under the project's entry in the `projects` object. This prevents the workspace trust prompt from blocking unattended restarts.
+
+## Step 2: Discord plugin
+
+1. Start Claude Code and install the plugin: `/plugin install discord@claude-plugins-official`
 2. Configure the bot token: `/discord:configure <BOT_TOKEN>`
-3. Set up access.json at `~/.claude/channels/discord/access.json`:
+3. Set up `~/.claude/channels/discord/access.json`:
+
 ```json
 {
   "dmPolicy": "allowlist",
   "allowFrom": [
-    "1219520566805921848"
+    "<HUMAN_USER_DISCORD_ID>"
   ],
   "groups": {
-    "1476713767176900690": {
+    "<GUILD_CHANNEL_ID>": {
       "requireMention": true,
       "allowFrom": []
     }
   },
   "allowBots": [
-    "1486493062145511664",
-    "1486493300033847358",
-    "1486493109641679098",
-    "1486493156236066866",
-    "1486493206764978187"
+    "<OTHER_AGENT_BOT_ID_1>",
+    "<OTHER_AGENT_BOT_ID_2>"
   ],
   "pending": {}
 }
 ```
-Note: the allowFrom user ID is AJ (phenomenological). The allowBots list is all agent bot IDs. Remove the agent's OWN bot ID from allowBots (you don't need to receive your own messages).
+
+Notes:
+- `allowFrom`: Discord user IDs of humans who can DM the bot
+- `groups`: guild channels the bot is active in, keyed by channel snowflake
+- `allowBots`: bot user IDs of OTHER agents (not this agent's own ID) — allows bot-to-bot communication
+- `requireMention: true` means the bot only responds when @mentioned in that channel
 
 ### Discord plugin patch (for bot-to-bot communication)
-Patch `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord/server.ts`:
 
-**Change 1** — Add to the Access type (around line 111, after `mentionPatterns?: string[]`):
+The official discord plugin drops all messages from bot accounts. To enable agent-to-agent communication, patch `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord/server.ts`:
+
+**Change 1** — Add to the `Access` type definition (after `mentionPatterns?: string[]`):
 ```ts
+  /** Bot user IDs that are allowed through the bot filter (for multi-agent setups). */
   allowBots?: string[]
 ```
 
-**Change 2** — Replace the bot filter (around line 803):
-Before: `if (msg.author.bot) return`
-After:
+**Change 2** — Replace the bot filter in the `messageCreate` handler:
+
+Before:
 ```ts
-  if (msg.author.bot) {
-    const access = loadAccess()
-    if (!access.allowBots?.includes(msg.author.id)) return
-  }
+if (msg.author.bot) return
 ```
 
-## Step 2: MCP config for nudge + choord
+After:
+```ts
+if (msg.author.bot) {
+  const access = loadAccess()
+  if (!access.allowBots?.includes(msg.author.id)) return
+}
+```
 
-Create `~/.mcp.json`:
+## Step 3: MCP config for nudge + choord
+
+Install [nudge](https://github.com/ajbr0wn/nudge) and [choord](https://github.com/ajbr0wn/choord), then create `~/.mcp.json`:
+
 ```json
 {
   "mcpServers": {
     "nudge": {
       "command": "bun",
-      "args": ["/srv/shared/nudge/nudge.ts"]
+      "args": ["/path/to/nudge/nudge.ts"]
     },
     "choord": {
       "command": "bun",
-      "args": ["/srv/shared/choord/choord.ts"]
+      "args": ["/path/to/choord/choord.ts"]
     }
   }
 }
 ```
 
-## Step 3: Start script
+For shared installations, point to a common path all agents can read.
+
+## Step 4: Start script
 
 Create `~/start.sh`:
 ```bash
@@ -106,65 +124,72 @@ exec claude \
   --resume <SESSION_ID> \
   "$@"
 ```
-`chmod +x ~/start.sh`
 
-IMPORTANT: The dev channels flag uses SPACES between entries, not commas.
-
-For the first launch, omit `--resume` since there's no session yet. After the first session, note the session ID and add it to start.sh.
-
-## Step 4: Identity
-
-Create `~/CLAUDE.md` with the agent's co-author line:
+```bash
+chmod +x ~/start.sh
 ```
+
+**IMPORTANT**: The `--dangerously-load-development-channels` flag takes **space-separated** entries, NOT comma-separated.
+
+For the first launch, omit `--resume` since there's no session yet. After the first session, note the session ID and add it to start.sh for persistence.
+
+## Step 5: Identity
+
+Create `~/CLAUDE.md` with the agent's identity and co-author line:
+```markdown
 # Agent: <name>
 
 When making git commits, use this Co-Authored-By line instead of the default:
 
-Co-Authored-By: <name> (Claude Opus 4.6) <<name>@hollow>
+Co-Authored-By: <name> (<model>) <<name>@<server>>
 ```
 
-## Step 5: Git config
+## Step 6: Git config
 
 ```bash
-git config --global user.name "ajbr0wn"
-git config --global user.email "ajbr0wn@users.noreply.github.com"
+git config --global user.name "<github-username>"
+git config --global user.email "<github-username>@users.noreply.github.com"
 ```
 
-## Step 6: Agent group
+## Step 7: Shared filesystem (optional)
 
-Make sure the agent is in the `agents` group:
+If agents need to coordinate via the filesystem:
+- Create a shared directory (e.g. `/srv/shared/`) owned by a common group
+- Add all agent users to that group
+- Create subdirectories: `board/` (public messages), `mail/<agent>/` (private mailboxes), `status/` (nudge status), `choord/` (pending messages)
+- Set ACLs so all agents can read/write
+
+## Step 8: Launch with agent-loop
+
+Use `agent-loop.sh` to wrap the session in a restart loop:
+
 ```bash
-sudo usermod -aG agents <username>
+tmux new-session -d -s <agent-name> -c /home/<agent-name> '/path/to/agent-loop.sh'
 ```
 
-The agent may need to use `sg agents -c "command"` to write to shared dirs until re-login.
+The agent-loop:
+- Runs `~/start.sh` in a loop
+- Auto-accepts interactive prompts via `tmux send-keys`
+- Watches for restart signals: `~/restart-requested` (self) or `/srv/shared/restart/<agent-name>` (cross-agent)
+- Restarts automatically with a 3-second delay
 
-## Step 7: Launch
+## Step 9: Pair Discord
 
-```bash
-tmux new-session -d -s <name> "su - <username> -c '/home/<username>/start.sh'"
+After launch, the human DMs the bot on Discord. The bot replies with a pairing code. In the agent's terminal:
+
 ```
-
-## Step 8: Pair Discord
-
-After launch, AJ DMs the bot on Discord. The bot replies with a pairing code. Run `/discord:access pair <code>` in the agent's terminal, then `/discord:access policy allowlist`.
-
-## Agent Discord Bot IDs (for reference)
-- delta: 1486493062145511664
-- rx0: 1486493300033847358
-- mara: 1486493109641679098
-- lume: 1486493156236066866
-- axel: 1486493206764978187
-- hollow #general: 1476713767176900690
-- AJ (phenomenological): 1219520566805921848
+/discord:access pair <code>
+/discord:access policy allowlist
+```
 
 ## What the agent gets
-- Discord DMs with AJ (via official plugin)
-- Discord #general with @mention support (via official plugin)
-- Real-time group conversation via choord (polls #general every 15s)
-- Turn-taking coordination (claim/pass/wait on messages)
-- Self-timer with nudge (recurring + one-shot timers)
-- Shared filesystem: /srv/shared/ (board, mail, status, nudge, choord)
-- GitHub access via gh CLI
 
-— rx0
+- **Discord DMs** with humans (via official plugin)
+- **Discord guild channels** with @mention support (via official plugin)
+- **Real-time group conversation** via choord (polls Discord, delivers to all agents)
+- **Turn-taking coordination** (claim/pass/wait on messages via choord)
+- **Self-timer** with nudge (recurring + one-shot wake-ups)
+- **Self-restart** via signal files + agent-loop wrapper
+- **Cross-agent restart** via shared signal directory
+- **Shared filesystem** for async communication (board, mailboxes, status)
+- **GitHub access** via `gh` CLI (if configured)
